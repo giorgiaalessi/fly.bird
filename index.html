@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Birds Attack - Gioco Stile Angry Birds</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(to bottom, #87CEEB 0%, #98FB98 70%, #228B22 100%);
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+        }
+        
+        canvas {
+            display: block;
+            border: 2px solid #8B4513;
+            box-shadow: 0 0 20px rgba(0,0,0,0.3);
+        }
+        
+        .ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-size: 18px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+            z-index: 100;
+        }
+        
+        .controls {
+            position: absolute;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: white;
+            text-align: center;
+            font-size: 14px;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
+        }
+        
+        .bird-selector {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.7);
+            padding: 10px;
+            border-radius: 10px;
+            color: white;
+        }
+        
+        .bird-type {
+            margin: 5px 0;
+            padding: 5px 10px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        
+        .bird-type:hover {
+            background: rgba(255,255,255,0.4);
+        }
+        
+        .bird-type.active {
+            background: rgba(255,255,0,0.6);
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas" width="1200" height="600"></canvas>
+    
+    <div class="ui">
+        <div>Punteggio: <span id="score">0</span></div>
+        <div>Uccelli rimanenti: <span id="birds">3</span></div>
+        <div>Maiali eliminati: <span id="pigs">0</span></div>
+    </div>
+    
+    <div class="controls">
+        Clicca e trascina per mirare • Rilascia per sparare • Tieni premuto più a lungo per più potenza
+    </div>
+    
+    <div class="bird-selector">
+        <div class="bird-type active" data-type="normal">🔴 Normale</div>
+        <div class="bird-type" data-type="speed">💨 Veloce</div>
+        <div class="bird-type" data-type="bomb">💣 Bomba</div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Variabili di gioco
+        let score = 0;
+        let birdsLeft = 3;
+        let pigsKilled = 0;
+        let currentBird = null;
+        let isDragging = false;
+        let dragStart = {x: 0, y: 0};
+        let slingshot = {x: 150, y: 400};
+        let selectedBirdType = 'normal';
+        
+        // Oggetti di gioco
+        let birds = [];
+        let obstacles = [];
+        let pigs = [];
+        let particles = [];
+        
+        // Fisica
+        const gravity = 0.5;
+        const friction = 0.98;
+        
+        // Tipi di uccelli
+        const birdTypes = {
+            normal: {color: '#FF0000', radius: 15, mass: 1, power: 1},
+            speed: {color: '#00FF00', radius: 12, mass: 0.8, power: 1.5},
+            bomb: {color: '#FF8C00', radius: 18, mass: 1.5, power: 2}
+        };
+        
+        // Classe Bird
+        class Bird {
+            constructor(x, y, type = 'normal') {
+                this.x = x;
+                this.y = y;
+                this.vx = 0;
+                this.vy = 0;
+                this.type = type;
+                this.config = birdTypes[type];
+                this.radius = this.config.radius;
+                this.mass = this.config.mass;
+                this.active = false;
+                this.trail = [];
+                this.exploded = false;
+            }
+            
+            update() {
+                if (!this.active) return;
+                
+                this.vy += gravity;
+                this.vx *= friction;
+                this.vy *= friction;
+                
+                this.x += this.vx;
+                this.y += this.vy;
+                
+                // Traccia
+                this.trail.push({x: this.x, y: this.y});
+                if (this.trail.length > 10) this.trail.shift();
+                
+                // Controllo collisioni
+                this.checkCollisions();
+                
+                // Rimuovi se esce dal canvas
+                if (this.x > canvas.width + 100 || this.y > canvas.height + 100) {
+                    this.active = false;
+                }
+            }
+            
+            checkCollisions() {
+                // Collisione con il terreno
+                if (this.y + this.radius > canvas.height - 50) {
+                    this.y = canvas.height - 50 - this.radius;
+                    this.vy *= -0.6;
+                    this.vx *= 0.8;
+                    
+                    if (Math.abs(this.vy) < 2) {
+                        this.active = false;
+                    }
+                }
+                
+                // Collisioni con ostacoli
+                obstacles.forEach((obstacle, index) => {
+                    if (this.collidesWith(obstacle)) {
+                        this.handleObstacleCollision(obstacle, index);
+                    }
+                });
+                
+                // Collisioni con maiali
+                pigs.forEach((pig, index) => {
+                    if (this.collidesWith(pig)) {
+                        this.handlePigCollision(pig, index);
+                    }
+                });
+            }
+            
+            collidesWith(obj) {
+                const dx = this.x - (obj.x + obj.width/2);
+                const dy = this.y - (obj.y + obj.height/2);
+                const distance = Math.sqrt(dx*dx + dy*dy);
+                return distance < this.radius + Math.min(obj.width, obj.height)/2;
+            }
+            
+            handleObstacleCollision(obstacle, index) {
+                // Crea particelle
+                this.createParticles(obstacle.x + obstacle.width/2, obstacle.y + obstacle.height/2, obstacle.color);
+                
+                // Rimuovi ostacolo se è debole
+                if (obstacle.health <= 1) {
+                    obstacles.splice(index, 1);
+                    score += 10;
+                } else {
+                    obstacle.health--;
+                    obstacle.color = obstacle.health > 1 ? '#8B4513' : '#D2691E';
+                }
+                
+                // Rimbalzo
+                this.vx *= -0.5;
+                this.vy *= -0.5;
+                
+                // Esplosione per uccelli bomba
+                if (this.type === 'bomb' && !this.exploded) {
+                    this.explode();
+                }
+                
+                updateUI();
+            }
+            
+            handlePigCollision(pig, index) {
+                // Elimina maiale
+                pigs.splice(index, 1);
+                pigsKilled++;
+                score += 50;
+                
+                // Crea particelle verdi
+                this.createParticles(pig.x + pig.width/2, pig.y + pig.height/2, '#00FF00');
+                
+                // Esplosione per uccelli bomba
+                if (this.type === 'bomb' && !this.exploded) {
+                    this.explode();
+                }
+                
+                updateUI();
+                
+                // Controlla vittoria
+                if (pigs.length === 0) {
+                    setTimeout(() => {
+                        alert('Complimenti! Hai eliminato tutti i maiali!');
+                        resetLevel();
+                    }, 500);
+                }
+            }
+            
+            explode() {
+                this.exploded = true;
+                
+                // Crea esplosione
+                for (let i = 0; i < 20; i++) {
+                    particles.push({
+                        x: this.x,
+                        y: this.y,
+                        vx: (Math.random() - 0.5) * 20,
+                        vy: (Math.random() - 0.5) * 20,
+                        life: 30,
+                        color: '#FF4500'
+                    });
+                }
+                
+                // Danneggia oggetti vicini
+                const explosionRadius = 80;
+                obstacles.forEach((obstacle, index) => {
+                    const dx = this.x - (obstacle.x + obstacle.width/2);
+                    const dy = this.y - (obstacle.y + obstacle.height/2);
+                    const distance = Math.sqrt(dx*dx + dy*dy);
+                    
+                    if (distance < explosionRadius) {
+                        obstacle.health -= 2;
+                        if (obstacle.health <= 0) {
+                            this.createParticles(obstacle.x + obstacle.width/2, obstacle.y + obstacle.height/2, obstacle.color);
+                            obstacles.splice(index, 1);
+                            score += 15;
+                        }
+                    }
+                });
+                
+                pigs.forEach((pig, index) => {
+                    const dx = this.x - (pig.x + pig.width/2);
+                    const dy = this.y - (pig.y + pig.height/2);
+                    const distance = Math.sqrt(dx*dx + dy*dy);
+                    
+                    if (distance < explosionRadius) {
+                        pigs.splice(index, 1);
+                        pigsKilled++;
+                        score += 50;
+                        this.createParticles(pig.x + pig.width/2, pig.y + pig.height/2, '#00FF00');
+                    }
+                });
+                
+                this.active = false;
+                updateUI();
+            }
+            
+            createParticles(x, y, color) {
+                for (let i = 0; i < 10; i++) {
+                    particles.push({
+                        x: x,
+                        y: y,
+                        vx: (Math.random() - 0.5) * 10,
+                        vy: (Math.random() - 0.5) * 10,
+                        life: 20,
+                        color: color
+                    });
+                }
+            }
+            
+            draw() {
+                // Traccia
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                for (let i = 0; i < this.trail.length; i++) {
+                    const point = this.trail[i];
+                    if (i === 0) ctx.moveTo(point.x, point.y);
+                    else ctx.lineTo(point.x, point.y);
+                }
+                ctx.stroke();
+                
+                // Uccello
+                ctx.fillStyle = this.config.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Occhi
+                ctx.fillStyle = 'white';
+                ctx.beginPath();
+                ctx.arc(this.x - 5, this.y - 3, 4, 0, Math.PI * 2);
+                ctx.arc(this.x + 5, this.y - 3, 4, 0, Math.PI * 2);
+                ctx.fill();
+                
+                ctx.fillStyle = 'black';
+                ctx.beginPath();
+                ctx.arc(this.x - 5, this.y - 3, 2, 0, Math.PI * 2);
+                ctx.arc(this.x + 5, this.y - 3, 2, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Becco
+                ctx.fillStyle = '#FFA500';
+                ctx.beginPath();
+                ctx.moveTo(this.x, this.y + 2);
+                ctx.lineTo(this.x - 8, this.y + 5);
+                ctx.lineTo(this.x, this.y + 8);
+                ctx.fill();
+            }
+        }
+        
+        // Classe Obstacle
+        class Obstacle {
+            constructor(x, y, width, height, health = 2) {
+                this.x = x;
+                this.y = y;
+                this.width = width;
+                this.height = height;
+                this.health = health;
+                this.color = health > 1 ? '#8B4513' : '#D2691E';
+            }
+            
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, this.width, this.height);
+                
+                // Bordo
+                ctx.strokeStyle = '#654321';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(this.x, this.y, this.width, this.height);
+            }
+        }
+        
+        // Classe Pig
+        class Pig {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.width = 30;
+                this.height = 30;
+            }
+            
+            draw() {
+                // Corpo
+                ctx.fillStyle = '#90EE90';
+                ctx.fillRect(this.x, this.y, this.width, this.height);
+                
+                // Occhi
+                ctx.fillStyle = 'white';
+                ctx.fillRect(this.x + 5, this.y + 5, 8, 8);
+                ctx.fillRect(this.x + 17, this.y + 5, 8, 8);
+                
+                ctx.fillStyle = 'black';
+                ctx.fillRect(this.x + 7, this.y + 7, 4, 4);
+                ctx.fillRect(this.x + 19, this.y + 7, 4, 4);
+                
+                // Muso
+                ctx.fillStyle = '#32CD32';
+                ctx.fillRect(this.x + 10, this.y + 15, 10, 8);
+                
+                // Narici
+                ctx.fillStyle = 'black';
+                ctx.fillRect(this.x + 12, this.y + 18, 2, 2);
+                ctx.fillRect(this.x + 16, this.y + 18, 2, 2);
+            }
+        }
+        
+        // Inizializza livello
+        function initLevel() {
+            // Reset
+            birds = [];
+            particles = [];
+            
+            // Struttura con ostacoli e maiali
+            obstacles = [
+                // Base
+                new Obstacle(600, 500, 200, 20, 3),
+                new Obstacle(620, 480, 20, 20, 1),
+                new Obstacle(660, 480, 20, 20, 1),
+                new Obstacle(700, 480, 20, 20, 1),
+                new Obstacle(740, 480, 20, 20, 1),
+                new Obstacle(780, 480, 20, 20, 1),
+                
+                // Torre sinistra
+                new Obstacle(620, 400, 20, 80, 2),
+                new Obstacle(640, 420, 60, 20, 1),
+                new Obstacle(620, 380, 80, 20, 2),
+                
+                // Torre destra
+                new Obstacle(760, 400, 20, 80, 2),
+                new Obstacle(700, 420, 60, 20, 1),
+                new Obstacle(700, 380, 80, 20, 2),
+                
+                // Torre centrale
+                new Obstacle(690, 350, 20, 130, 3),
+                new Obstacle(710, 350, 20, 130, 3),
+                new Obstacle(690, 330, 40, 20, 2),
+                
+                // Strutture aggiuntive
+                new Obstacle(900, 480, 20, 40, 1),
+                new Obstacle(920, 460, 20, 60, 2),
+                new Obstacle(940, 480, 20, 40, 1),
+                new Obstacle(900, 440, 60, 20, 1),
+            ];
+            
+            // Maiali
+            pigs = [
+                new Pig(650, 450),
+                new Pig(720, 450),
+                new Pig(695, 300),
+                new Pig(910, 420),
+                new Pig(850, 470)
+            ];
+            
+            // Reset statistiche
+            birdsLeft = 3;
+            pigsKilled = 0;
+            updateUI();
+        }
+        
+        // Disegna fionda
+        function drawSlingshot() {
+            const slingshotHeight = 100;
+            
+            // Pali della fionda
+            ctx.strokeStyle = '#8B4513';
+            ctx.lineWidth = 8;
+            ctx.beginPath();
+            ctx.moveTo(slingshot.x - 30, slingshot.y + 20);
+            ctx.lineTo(slingshot.x - 30, slingshot.y - slingshotHeight);
+            ctx.moveTo(slingshot.x + 30, slingshot.y + 20);
+            ctx.lineTo(slingshot.x + 30, slingshot.y - slingshotHeight);
+            ctx.stroke();
+            
+            // Elastico
+            if (currentBird && isDragging) {
+                ctx.strokeStyle = '#654321';
+                ctx.lineWidth = 4;
+                ctx.beginPath();
+                ctx.moveTo(slingshot.x - 30, slingshot.y - slingshotHeight + 20);
+                ctx.lineTo(currentBird.x, currentBird.y);
+                ctx.lineTo(slingshot.x + 30, slingshot.y - slingshotHeight + 20);
+                ctx.stroke();
+            }
+            
+            // Base
+            ctx.fillStyle = '#8B4513';
+            ctx.fillRect(slingshot.x - 40, slingshot.y + 20, 80, 30);
+        }
+        
+        // Disegna traiettoria prevista
+        function drawTrajectory() {
+            if (!currentBird || !isDragging) return;
+            
+            const power = Math.min(Math.sqrt((dragStart.x - currentBird.x)**2 + (dragStart.y - currentBird.y)**2) / 5, 20);
+            const angle = Math.atan2(dragStart.y - currentBird.y, dragStart.x - currentBird.x);
+            
+            let vx = Math.cos(angle) * power * birdTypes[selectedBirdType].power;
+            let vy = Math.sin(angle) * power * birdTypes[selectedBirdType].power;
+            let x = currentBird.x;
+            let y = currentBird.y;
+            
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            
+            for (let i = 0; i < 50; i++) {
+                vy += gravity;
+                x += vx;
+                y += vy;
+                
+                if (i % 3 === 0) ctx.lineTo(x, y);
+                if (y > canvas.height - 50) break;
+            }
+            
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+        
+        // Disegna sfondo
+        function drawBackground() {
+            // Cielo già nel CSS
+            
+            // Terreno
+            ctx.fillStyle = '#228B22';
+            ctx.fillRect(0, canvas.height - 50, canvas.width, 50);
+            
+            // Erba
+            ctx.fillStyle = '#32CD32';
+            for (let x = 0; x < canvas.width; x += 20) {
+                const height = Math.random() * 10 + 5;
+                ctx.fillRect(x, canvas.height - 50 - height, 3, height);
+            }
+            
+            // Nuvole
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+            for (let i = 0; i < 5; i++) {
+                const x = i * 250 + Math.sin(Date.now() * 0.001 + i) * 20;
+                const y = 50 + i * 30;
+                ctx.beginPath();
+                ctx.arc(x, y, 30, 0, Math.PI * 2);
+                ctx.arc(x + 25, y, 35, 0, Math.PI * 2);
+                ctx.arc(x + 50, y, 30, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+        
+        // Loop principale
+        function gameLoop() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Disegna sfondo
+            drawBackground();
+            
+            // Aggiorna e disegna particelle
+            particles = particles.filter(particle => {
+                particle.life--;
+                particle.x += particle.vx;
+                particle.y += particle.vy;
+                particle.vy += gravity * 0.3;
+                particle.vx *= 0.99;
+                
+                if (particle.life > 0) {
+                    const alpha = particle.life / 20;
+                    ctx.fillStyle = particle.color;
+                    ctx.globalAlpha = alpha;
+                    ctx.fillRect(particle.x, particle.y, 4, 4);
+                    ctx.globalAlpha = 1;
+                    return true;
+                }
+                return false;
+            });
+            
+            // Disegna fionda
+            drawSlingshot();
+            
+            // Disegna traiettoria
+            drawTrajectory();
+            
+            // Disegna ostacoli
+            obstacles.forEach(obstacle => obstacle.draw());
+            
+            // Disegna maiali
+            pigs.forEach(pig => pig.draw());
+            
+            // Aggiorna e disegna uccelli
+            birds.forEach((bird, index) => {
+                bird.update();
+                bird.draw();
+                
+                if (!bird.active) {
+                    birds.splice(index, 1);
+                    if (birds.length === 0 && birdsLeft === 0) {
+                        if (pigs.length > 0) {
+                            setTimeout(() => {
+                                alert('Game Over! Non hai eliminato tutti i maiali.');
+                                resetLevel();
+                            }, 1000);
+                        }
+                    }
+                }
+            });
+            
+            // Disegna uccello corrente
+            if (currentBird && !currentBird.active) {
+                currentBird.draw();
+            }
+            
+            requestAnimationFrame(gameLoop);
+        }
+        
+        // Gestione mouse
+        canvas.addEventListener('mousedown', (e) => {
+            if (birdsLeft <= 0 || birds.some(bird => bird.active)) return;
+            
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            
+            if (!currentBird) {
+                currentBird = new Bird(slingshot.x, slingshot.y - 20, selectedBirdType);
+            }
+            
+            const dx = mouseX - currentBird.x;
+            const dy = mouseY - currentBird.y;
+            
+            if (Math.sqrt(dx*dx + dy*dy) < 50) {
+                isDragging = true;
+                dragStart = {x: mouseX, y: mouseY};
+            }
+        });
+        
+        canvas.addEventListener('mousemove', (e) => {
+            if (!isDragging || !currentBird) return;
+            
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            
+            const dx = mouseX - slingshot.x;
+            const dy = mouseY - (slingshot.y - 20);
+            const distance = Math.sqrt(dx*dx + dy*dy);
+            const maxDistance = 100;
+            
+            if (distance > maxDistance) {
+                const angle = Math.atan2(dy, dx);
+                currentBird.x = slingshot.x + Math.cos(angle) * maxDistance;
+                currentBird.y = (slingshot.y - 20) + Math.sin(angle) * maxDistance;
+            } else {
+                currentBird.x = mouseX;
+                currentBird.y = mouseY;
+            }
+        });
+        
+        canvas.addEventListener('mouseup', (e) => {
+            if (!isDragging || !currentBird) return;
+            
+            isDragging = false;
+            
+            const power = Math.min(Math.sqrt((dragStart.x - currentBird.x)**2 + (dragStart.y - currentBird.y)**2) / 5, 20);
+            const angle = Math.atan2(dragStart.y - currentBird.y, dragStart.x - currentBird.x);
+            
+            currentBird.vx = Math.cos(angle) * power * currentBird.config.power;
+            currentBird.vy = Math.sin(angle) * power * currentBird.config.power;
+            currentBird.active = true;
+            
+            birds.push(currentBird);
+            currentBird = null;
+            birdsLeft--;
+            updateUI();
+        });
+        
+        // Selezione tipo uccello
+        document.querySelectorAll('.bird-type').forEach(button => {
+            button.addEventListener('click', () => {
+                document.querySelectorAll('.bird-type').forEach(b => b.classList.remove('active'));
+                button.classList.add('active');
+                selectedBirdType = button.dataset.type;
+                
+                if (currentBird && !currentBird.active) {
+                    currentBird = new Bird(currentBird.x, currentBird.y, selectedBirdType);
+                }
+            });
+        });
+        
+        // Aggiorna UI
+        function updateUI() {
+            document.getElementById('score').textContent = score;
+            document.getElementById('birds').textContent = birdsLeft;
+            document.getElementById('pigs').textContent = pigsKilled;
+        }
+        
+        // Reset livello
+        function resetLevel() {
+            score = 0;
+            birdsLeft = 3;
+            pigsKilled = 0;
+            currentBird = null;
+            isDragging = false;
+            birds = [];
+            particles = [];
+            initLevel();
+        }
+        
+        // Avvia gioco
+        initLevel();
+        gameLoop();
+        
+        // Controlli da tastiera
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                resetLevel();
+            }
+        });
+    </script>
+</body>
+</html>
